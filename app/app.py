@@ -117,26 +117,27 @@ def research_node(
         job_result: str, # search の結果
 ):
     # リサーチエージェントを呼び出し、結果を取得
-    # あなたは、DuckDuckGo検索エンジンを使って、検索された情報を順番に確認し、ポイントを外さずに思慮深く要約するリサーチアシスタントです。
-    prompt = [{'role': 'system', 'content': "You are a research assistant who uses the DuckDuckGo search engine to review the information retrieved in sequence and summarize it thoughtfully without missing the point."}]
-    prompt.append({"role": "system", "content": "Summary results must be in Japanese."})
+    # あなたは、DuckDuckGo検索エンジンを使って、検索された情報を順番に確認し、ポイントを外さずに思慮深く説明するリサーチアシスタントです。
+    prompt = [{'role': 'system', 'content': "You are a research assistant who uses the DuckDuckGo search engine to review searched information in order, explaining points carefully without missing anything."}]
+    prompt.append({"role": "system", "content": "Explanation results must be in Japanese."})
     
     research_prompt = create_agent_system(prompt, RESEARCH_NODE)
-    research_prompt.append({"role": "system", "content": 'Please generate JSON from the following search result text. Generate in the format {"supervisor_result": summarized results} using "search_result" as the schema and summarized results as the keys.'})
-    research_prompt.append({"role": "user", "content": 'Please generate JSON from the text of search job results. Use "research_result" as the schema, and use one of summarized results as the key to generate it in the form {"research_result": summarized results}.'})
+    research_prompt.append({"role": "system", "content": "Please generate a JSON from the text of the following search results. Use 'explanation_result' as the schema and 'explanation results' as the key, and generate it in the format of {'explanation_result': 'explanation results'}."})
+    research_prompt.append({"role": "user", "content": "Generate a JSON from the text of the following search results. Use 'explanation_result' as the schema and the results of explaining the search as the key, creating it in the format of {'explanation_result': the results of explaining the search}."})
     research_prompt.append({"role": "user", "content": f"Text of search job results: {job_result}"})
     """
     システム
-    あなたは、DuckDuckGo検索エンジンを使って、検索された情報を順番に確認し、ポイントを外さずに思慮深く要約するリサーチアシスタントです。
-    要約結果は日本語でなければならない。
+    あなたは、DuckDuckGo検索エンジンを使って、検索された情報を順番に確認し、ポイントを外さずに思慮深く説明するリサーチアシスタントです。
+    説明結果は日本語でなければならない。
     
     あなたの専門分野に従って自律的に働いてください。使用可能なツールを使ってください
     確認のために質問をしないでください
     あなたの他のチームメンバーや他のチームも、それぞれの専門分野であなたと協力します
     あなたが選ばれたのには理由があります！あなたは以下のチームメンバーの一人です: {team_members}
-    以下の検索結果のテキストからJSONを生成してください。スキーマとして「search_result」、キーとして「summarized results」を使用し、{"supervisor_result": summarized results}の形式で生成してください。
+    
+    以下の検索結果のテキストからJSONを生成してください。スキーマとして「explanation_result」、キーとして「explanation results」を使用し、{"explanation_result": explanation results}の形式で生成してください。
     user
-    以下の検索結果のテキストからJSONを生成する。スキーマとして "search_result "を使用し、キーとして要約された結果を使用して、{"supervisor_result": 要約された結果}というフォーマットで生成します。
+    以下の検索結果のテキストからJSONを生成する。スキーマとして "explanation_result "を使用し、キーとして検索を説明した結果を使用して、{"explanation_result": 検索を説明した結果}というフォーマットで生成します。
     search ジョブ結果のテキスト: {job_result}
     """
     
@@ -155,7 +156,7 @@ def research_node(
     
     # 出力と新しいメッセージをステートに反映
     return {
-        "output": search_res["research_result"],
+        "output": search_res["explanation_result"],
         "messages": job_result
     }
 
@@ -707,7 +708,7 @@ def research_agent(
     query = question
     search_res = search_agent_1cycle(question, query)
 
-    message = f"検索結果を要約した回答: {search_res['output']}\n\n質問と回答の整合性チェック: {search_res['qa_result']['output']}"
+    message = f"検索結果を説明した回答: {search_res['output']}\n\n質問と回答の整合性チェック: {search_res['qa_result']['output']}"
     emit('receive_message', {'message': message})
     # カウント用変数の初期化
     research_cnt = 1
@@ -768,7 +769,7 @@ def research_agent(
 
             search_res = search_agent_1cycle(question, query)
 
-            r_m = f"再検索クエリ: {query}\n\n検索結果を要約した回答: {search_res['output']}\n\n質問と回答の整合性チェック: {search_res['qa_result']['output']}"
+            r_m = f"再検索クエリ: {query}\n\n検索結果を説明した回答: {search_res['output']}\n\n質問と回答の整合性チェック: {search_res['qa_result']['output']}"
             emit('receive_message', {'message': r_m})
             # カウントアップ
             research_cnt += 1
@@ -779,7 +780,7 @@ def research_agent(
     }
     
 def get_summary_of_search_results(model_name, research_res):
-    message_res = f"最終出力\n\n検索に使用したクエリ:{research_res['final_query']}\n\n検索結果を要約した最終回答: {research_res['search_output']}\n\n最終判定結果: {research_res['final_qa']}\n\n使用モデル: {model_name}"
+    message_res = f"最終出力\n\n検索に使用したクエリ:{research_res['final_query']}\n\n検索結果を説明した最終回答: {research_res['search_output']}\n\n最終判定結果: {research_res['final_qa']}\n\n使用モデル: {model_name}"
     emit('receive_message', {'message': message_res})
     
 class StreamingLLMMemory:
