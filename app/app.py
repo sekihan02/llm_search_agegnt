@@ -85,6 +85,7 @@ RE_RESEARCH_NODE = "re-research"
 QUALITY_ASSURANCE_NODE = "quality_assurance"
 WRITER_NODE = "writer"
 SUPERVISOR_NODE = "supervisor"
+DECISION = "decision"
 
 # エージェントに追加するシステムプロンプト作成関数
 def create_agent_system(
@@ -104,6 +105,55 @@ def create_agent_system(
     """
     # エージェントを実行するsystem_promptを返す
     return system_prompt
+
+# Decisionノードの定義
+def search_decision_node(
+        model_name: str,
+        input_text: str,
+):
+    # 検索判断エージェントを呼び出し、結果を取得
+    # あなたは、input_text を受け取り、それを自分が持つ知識で絶対に正しく回答できるかを思慮深く考えて判断する決定者です。
+    prompt = [{'role': 'system', 'content': "You are the decider who receives input_text and judiciously considers whether you can respond with certainty on your own."}]
+    prompt = [{'role': 'system', 'content': "If you receive input_text and determine that it's better to generate an answer by conducting an external search, please decide 'Search'. If you can answer with your own knowledge and the query does not pertain to recent content, then please reply 'Not Search'."}]
+    
+    decision_prompt = create_agent_system(prompt, DECISION)
+    decision_prompt.append({"role": "system", "content": 'Please generate a JSON from the following input text. Use "decision_result" as the schema and "decision results" as the key, and generate it in the format of {"decision_result": "decision results"}.'})
+    decision_prompt.append({"role": "user", "content": 'Generate a JSON from the following input text. Use "decision_result as the schema and the decision result as the key, creating it in the format of {"decision_result": "Search or Not Search"}.'})
+    decision_prompt.append({"role": "user", "content": f"Input text: {input_text}"})
+    """
+    システム
+    あなたは、input_text を受け取り、それを自分が持つ知識で絶対に正しく回答できるかを思慮深く考えて判断する決定者です。
+    あなたは、input_text を受け取り、外部検索を行い回答を生成した方が良いと判断するのなら  Search と判断してください。あなた自身の知識で回答でき、最近の内容が聞かれているのでなければ　Not Search と回答してください。
+    (これは入れてません。回答できるか自信が無くても Search と回答します。) 
+    
+    あなたの専門分野に従って自律的に働いてください。使用可能なツールを使ってください
+    確認のために質問をしないでください
+    あなたの他のチームメンバーや他のチームも、それぞれの専門分野であなたと協力します
+    あなたが選ばれたのには理由があります！あなたは以下のチームメンバーの一人です: {team_members}
+    以下の入力されたテキストからJSONを生成してください。スキーマとして「decision_result」、キーとして「decision results」を使用し、{"decision_result": decision results}の形式で生成してください。
+    user
+    以下の入力されたテキストからJSONを生成する。スキーマとして "decision_result "を使用し、キーとして判断結果を使用して、{"decision_result": Search or Not Search}というフォーマットで生成します。
+    入力されたテキスト: {input_text}
+    """
+    
+    # Research用のプロンプトテンプレートを作成
+    response = client.chat.completions.create(
+        model=model_name, # model = "deployment_name".
+        messages=decision_prompt,
+        response_format={ "type": "json_object" },
+        temperature=TEMPERATURE,
+    )
+    decision_res_str = response.choices[0].message.content
+    # print(decision_res_str)
+    
+    # JSON形式の文字列を辞書に変換
+    search_res = json.loads(decision_res_str)
+    
+    # 出力と新しいメッセージをステートに反映
+    return {
+        "output": search_res["decision_result"],
+        "messages": input_text
+    }
 
 # テキスト検索用の関数
 def search_text(keywords, region='wt-wt', safesearch='moderate', timelimit=None, max_results=10):
@@ -148,8 +198,10 @@ def research_node(
         response_format={ "type": "json_object" },
         temperature=TEMPERATURE,
     )
+    
+    print("response")
+    print(response)
     search_res_str = response.choices[0].message.content
-    # print(search_res_str)
     
     # JSON形式の文字列を辞書に変換
     search_res = json.loads(search_res_str)
@@ -847,11 +899,28 @@ def index():
 @socketio.on('send_message')
 def handle_message(data):
     user_message = data['message']
+    with Timer(prefix=f'thinking time by decision.'):
+        decision_res = search_decision_node(MODEL_NAME, user_message)
     
-    with Timer(prefix=f'Handle all time by research.'):
-        research_res = research_agent(user_message)
-    
-    get_summary_of_search_results(MODEL_NAME, research_res)
+    if decision_res["output"] == "Search":
+        emit('receive_message', {'message': 'Perform search'})
+        with Timer(prefix=f'Handle all time by research.'):
+            research_res = research_agent(user_message)
+        
+        get_summary_of_search_results(MODEL_NAME, research_res)
+    else:
+        # 検索を使用しない場合
+        emit('receive_message', {'message': 'Answered only by LLM'})
+        messages = [{"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": user_message}]
+        response = client.chat.completions.create(
+            model=MODEL_NAME, # model = "deployment_name".
+            messages=messages,
+            temperature=TEMPERATURE,
+        )
+        print(response)
+        res_str = response.choices[0].message.content
+        emit('receive_message', {'message': res_str})
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
