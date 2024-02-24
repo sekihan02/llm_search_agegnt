@@ -86,6 +86,8 @@ QUALITY_ASSURANCE_NODE = "quality_assurance"
 WRITER_NODE = "writer"
 SUPERVISOR_NODE = "supervisor"
 DECISION = "decision"
+SPLIT_SEAECH_DECISION = "split_search_decision"
+Q_LEN_SEAECH_DECISION = 50
 
 # エージェントに追加するシステムプロンプト作成関数
 def create_agent_system(
@@ -374,30 +376,102 @@ def qa_node(
         "output": qa_res["qa_result"]
     }
     
+def planning_split_search_query(model_name, question, search_query):
+    # 検索判断エージェントを呼び出し、結果を取得
+    prompt = [{'role': 'system', 'content': "Based on the following 'question', please group the 'search_query' based on relevance and format it into a list that can be used in Python."}]
     
+    split_s_dec_prompt = create_agent_system(prompt, SPLIT_SEAECH_DECISION)
+    split_s_dec_prompt.append({"role": "system", "content": 'Please generate a JSON from the following input text. Use "split_search_query_result" as the schema, and "the result of grouping the search_query based on relevance into a list format that can be used in Python" as the key. Generate it in the format {"split_search_query_result": the result of grouping the search_query based on relevance into a list format that can be used in Python}.'})
+    
+    split_s_dec_prompt.append({"role": "user", "content": 'Generate a JSON from the following input text. Use "split_search_query_result" as the schema, and use the judgment result as the key, to create it in the format {"split_search_query_result": the result of grouping the search_query based on relevance into a list format that can be used in Python}.'})
+    split_s_dec_prompt.append({"role": "user", "content": f"Input text: {question}"})
+    split_s_dec_prompt.append({"role": "user", "content": f"Search queries extracted from the input text: {search_query}"})
+    """
+    システム
+    あなたは、以下の question に基づいて、 search_query を関連性に基づいてグループ化して python で使用できるリストの形にしてください。
+    
+    あなたの専門分野に従って自律的に働いてください。使用可能なツールを使ってください
+    確認のために質問をしないでください
+    あなたの他のチームメンバーや他のチームも、それぞれの専門分野であなたと協力します
+    あなたが選ばれたのには理由があります！あなたは以下のチームメンバーの一人です: {team_members}
+    
+    以下の入力されたテキストからJSONを生成してください。スキーマとして「split_search_query_result」、キーとして「search_query を関連性に基づいてグループ化して python で使用できるリストの形した結果」を使用し、{"split_search_query_result": search_query を関連性に基づいてグループ化して python で使用できるリストの形した結果}の形式で生成してください。
+    user
+    以下の入力されたテキストからJSONを生成する。スキーマとして "split_search_query_result"を使用し、キーとして判断結果を使用して、{"split_search_query_result": search_query を関連性に基づいてグループ化して python で使用できるリストの形した結果}というフォーマットで生成します。
+    
+    入力されたテキスト: {question}
+    入力されたテキストから抽出した検索クエリ: search_query
+    """
+    
+    # Research用のプロンプトテンプレートを作成
+    response = client.chat.completions.create(
+        model=model_name, # model = "deployment_name".
+        messages=split_s_dec_prompt,
+        response_format={ "type": "json_object" },
+        temperature=TEMPERATURE,
+    )
+    split_search_query_str = response.choices[0].message.content
+    
+    # JSON形式の文字列を辞書に変換
+    split_search_query = json.loads(split_search_query_str)
+    
+    # 出力と新しいメッセージをステートに反映
+    return {
+        "output": split_search_query["split_search_query_result"],
+    }
+
+
 def search_agent_1cycle(
     question: str,
     query: str,
 ):
     search = ""
-    text_results = search_text(query)
-    for result in text_results:
-        search += result["body"] + ", "
-        # print(result["body"])
+    # 検索クエリの分割を実行
+    planning_split_queries = planning_split_search_query(MODEL_NAME, question, str(query))
+    # emit('receive_message', {'message': f"planning_split_search_query: {str(planning_split_queries)}"})
+    print(f"planning_split_search_query: {str(planning_split_queries)}")
+    # planning_split_queries["output"]の内容を確認し、適切に処理
+    output_data = planning_split_queries["output"]
 
+    if isinstance(output_data, dict):  # outputが辞書型の場合
+        for key, values in output_data.items():
+            combined_string = " ".join(values)
+            # 辞書のキーと結合された文字列を使用
+            text_results = search_text(combined_string)
+            for result in text_results:
+                search += result["body"] + ", "
+                
+    elif isinstance(output_data, list):
+        if all(isinstance(item, list) for item in output_data):  # リストのリストの場合
+            for inner_list in output_data:
+                combined_string = " ".join(inner_list)
+                # 結合された文字列を使用
+                text_results = search_text(combined_string)
+                for result in text_results:
+                    search += result["body"] + ", "
+        else:  # 単一のリストの場合
+            combined_string = " ".join(output_data)
+            # 結合された文字列を使用
+            text_results = search_text(combined_string)
+            for result in text_results:
+                search += result["body"] + ", "
+        
     # search_node
     research_res = research_node(
         MODEL_NAME,
         search, # search の結果
     )
     research_output = research_res['output']
-
+    # emit('receive_message', {'message': f"research_node: {research_output}"})
+    print(f"research_node: {research_output}")
+    
     qa_res = qa_node(
         MODEL_NAME,
         question,
         research_output
     )
-    
+    # emit('receive_message', {'message': f"qa_result: {qa_res}"})
+    print(f"qa_result: {qa_res}")
     
     return {
         "output": research_output,
@@ -896,21 +970,33 @@ memory = StreamingLLMMemory(max_length=16)
 def index():
     return render_template('index.html')
 
+
 @socketio.on('send_message')
 def handle_message(data):
     user_message = data['message']
-    with Timer(prefix=f'thinking time by decision.'):
-        decision_res = search_decision_node(MODEL_NAME, user_message)
-    
+    # 検索実施判定 文字数に応じて条件分岐
+    if len(user_message) >= Q_LEN_SEAECH_DECISION:
+        with Timer(prefix=f'thinking time by decision.'):
+            decision_res = {
+                "output": "Search",
+                "messages": user_message
+            }
+    else:
+        with Timer(prefix=f'thinking time by decision.'):
+            decision_res = search_decision_node(MODEL_NAME, user_message)
+    # emit('receive_message', {'message': f"search_decision_node 結果: {decision_res['output']}"})
+    print(f"search_decision_node 結果: {decision_res['output']}")
     if decision_res["output"] == "Search":
-        emit('receive_message', {'message': 'Perform search'})
+        # emit('receive_message', {'message': 'Perform search'})
+        print(f"Perform search")
         with Timer(prefix=f'Handle all time by research.'):
             research_res = research_agent(user_message)
         
         get_summary_of_search_results(MODEL_NAME, research_res)
     else:
         # 検索を使用しない場合
-        emit('receive_message', {'message': 'Answered only by LLM'})
+        # emit('receive_message', {'message': 'Answered only by LLM'})
+        print(f"Answered only by LLM")
         messages = [{"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": user_message}]
         response = client.chat.completions.create(
