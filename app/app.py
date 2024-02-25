@@ -5,6 +5,9 @@ import os
 import json
 import datetime as dt
 import warnings
+from sklearn.metrics.pairwise import cosine_similarity
+import pandas as pd
+import numpy as np
 
 import arxiv
 import openai
@@ -167,13 +170,20 @@ def search_text(keywords, region='wt-wt', safesearch='moderate', timelimit=None,
 def research_node(
         model_name: str,
         job_result: str, # search の結果
+        search_system: str,
+        promt_system: str
 ):
     # リサーチエージェントを呼び出し、結果を取得
     # あなたは、DuckDuckGo検索エンジンを使って、検索された情報を順番に確認し、ポイントを外さずに思慮深く説明するリサーチアシスタントです。
     prompt = [{'role': 'system', 'content': "You are a research assistant who uses the DuckDuckGo search engine to review searched information in order, explaining points carefully without missing anything."}]
+    prompt.append({"role": "system", "content": search_system})
+    
     prompt.append({"role": "system", "content": "Explanation results must be in Japanese."})
     
     research_prompt = create_agent_system(prompt, RESEARCH_NODE)
+    if promt_system != "":
+        research_prompt.append(promt_system)
+    
     research_prompt.append({"role": "system", "content": "Please generate a JSON from the text of the following search results. Use 'explanation_result' as the schema and 'explanation results' as the key, and generate it in the format of {'explanation_result': 'explanation results'}."})
     research_prompt.append({"role": "user", "content": "Generate a JSON from the text of the following search results. Use 'explanation_result' as the schema and the results of explaining the search as the key, creating it in the format of {'explanation_result': the results of explaining the search}."})
     research_prompt.append({"role": "user", "content": f"Text of search job results: {job_result}"})
@@ -424,6 +434,8 @@ def planning_split_search_query(model_name, question, search_query):
 def search_agent_1cycle(
     question: str,
     query: str,
+    search_system: str,
+    prompt_system: str,
 ):
     search = ""
     # 検索クエリの分割を実行
@@ -460,6 +472,8 @@ def search_agent_1cycle(
     research_res = research_node(
         MODEL_NAME,
         search, # search の結果
+        search_system,
+        prompt_system
     )
     research_output = research_res['output']
     # emit('receive_message', {'message': f"research_node: {research_output}"})
@@ -830,9 +844,14 @@ def function_calling_query_change_cycle(
 
 def research_agent(
     question:str,
+    memory
 ):
     query = question
-    search_res = search_agent_1cycle(question, query)
+    embedding_df = pd.read_csv('./app/data/embedded_words.csv')
+    most_similar_word = ICSL_search_system(question, embedding_df)
+    search_system = "質問に対して、対応するプロンプトを選択する あなたの関心ごとは、" + most_similar_word + "についてです"
+    print(search_system)
+    search_res = search_agent_1cycle(question, query, search_system, "")
 
     message = f"検索結果を説明した回答: {search_res['output']}\n\n質問と回答の整合性チェック: {search_res['qa_result']['output']}"
     emit('receive_message', {'message': message})
@@ -840,6 +859,7 @@ def research_agent(
     research_cnt = 1
     # outputが'Not Acceptable'である間、処理を繰り返す
     while search_res['qa_result']['output']  == 'Not Acceptable':
+        prompt, memory = ICRL(memory, search_res['output'])
         print("-"*50)
         with Timer(prefix=f'Number of re-researches {research_cnt+1} :'):
             # カウントが3に達したらループを強制終了
@@ -893,7 +913,7 @@ def research_agent(
                     # query = ", ".join(query_re_list).strip()
                     query = ", ".join(list(dict.fromkeys(query_re_list))).strip()
 
-            search_res = search_agent_1cycle(question, query)
+            search_res = search_agent_1cycle(question, query, search_system, prompt[0])
 
             r_m = f"再検索クエリ: {query}\n\n検索結果を説明した回答: {search_res['output']}\n\n質問と回答の整合性チェック: {search_res['qa_result']['output']}"
             emit('receive_message', {'message': r_m})
@@ -963,8 +983,44 @@ class StreamingLLMMemory:
     # ここにはStreamingLLMとのインタラクションのための追加のメソッドを
     # 実装することもできます。例えば、generate_response, update_llm_modelなどです。
 
-# 16件のメッセージを記憶するように設定
-memory = StreamingLLMMemory(max_length=16)
+# # 4件のメッセージを記憶するように設定
+# search_memory = StreamingLLMMemory(max_length=4)
+
+def ICRL(memory, research_res = ""):
+    memory.add(research_res)
+    get_memory = memory.get()
+    memory_str = ""
+    for g_m in get_memory:
+        memory_str += g_m
+    
+    prompt = []
+    if memory_str != "":
+        prompt.append({"role": "system", "content": f"The following text represents an inappropriate or failed response to a query, not aligning with the intended purpose. Please avoid generating such responses again.\n\n{memory_str}"})
+    return prompt, memory
+
+def get_embedding(text, model="text-embedding-3-small"):
+    text = text.replace("\n", " ")
+    return client.embeddings.create(input=[text], model=model).data[0].embedding
+
+
+def ICSL_search_system(question, embedding_df):
+    # 質問文の埋め込みベクトルを取得
+    question_embedding = get_embedding(question, model='text-embedding-3-small')
+    
+    # 文字列形式の埋め込みベクトルをnumpy配列に変換
+    embedding_df['embedding'] = embedding_df['embedding'].apply(lambda x: np.fromstring(x.strip("[]"), sep=','))
+
+    # 類似度計算のために、質問文の埋め込みベクトルと単語の埋め込みベクトルを配列に格納
+    word_embeddings = np.array(embedding_df['embedding'].tolist())
+
+    # コサイン類似度を計算
+    similarities = cosine_similarity([question_embedding], word_embeddings)
+
+    # 最も類似度が高い単語を抽出
+    most_similar_word_index = np.argmax(similarities)
+    most_similar_word = embedding_df.iloc[most_similar_word_index]['word']
+    
+    return most_similar_word
 
 @app.route('/')
 def index():
@@ -973,6 +1029,8 @@ def index():
 
 @socketio.on('send_message')
 def handle_message(data):
+    # 4件のメッセージを記憶するように設定
+    search_memory = StreamingLLMMemory(max_length=4)
     user_message = data['message']
     # 検索実施判定 文字数に応じて条件分岐
     if len(user_message) >= Q_LEN_SEAECH_DECISION:
@@ -990,7 +1048,7 @@ def handle_message(data):
         # emit('receive_message', {'message': 'Perform search'})
         print(f"Perform search")
         with Timer(prefix=f'Handle all time by research.'):
-            research_res = research_agent(user_message)
+            research_res = research_agent(user_message, search_memory)
         
         get_summary_of_search_results(MODEL_NAME, research_res)
     else:
