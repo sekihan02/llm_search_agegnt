@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
+import logging
 from werkzeug.utils import secure_filename
 import os
 import json
@@ -69,6 +70,7 @@ class Timer:
 
 
 app = Flask(__name__)
+app.logger.setLevel(logging.DEBUG)  # デバッグレベルのログを出力
 app.config['SECRET_KEY'] = 'secret!'
 app.config['UPLOAD_FOLDER'] = 'uploads'  # アップロードされたファイルを保存するフォルダ
 socketio = SocketIO(app)
@@ -1022,6 +1024,158 @@ def ICSL_search_system(question, embedding_df):
     
     return most_similar_word
 
+
+def make_re_search_query_report(
+    model_name: str,
+    question: str,    # 最初の質問
+):
+    
+    # questionから検索クエリを作成する。before_queryと違うものクエリを作成する
+    # テキストのブロックが提供されます。あなたのタスクは、そこからキーワードのリストを抽出することです。
+    prompt = [{'role': 'system', 'content': "You will be provided with a block of text, and your task is to extract a list of keywords from it."}]
+    
+    prompt.append({"role": "user", "content": f'Use the current date if needed: {dt.datetime.now().strftime("%B %d, %Y")}.'})
+    
+    prompt.append({"role": "system", "content": "Use the following example to extract a list of keywords.\n###Example###\n\nuser's question: Black-on-black ware is a 20th- and 21st-century pottery tradition developed by the Puebloan Native American ceramic artists in Northern New Mexico. Traditional reduction-fired blackware has been made for centuries by pueblo artists. Black-on-black ware of the past century is produced with a smooth surface, with the designs applied through selective burnishing or the application of refractory slip. Another style involves carving or incising designs and selectively polishing the raised areas. For generations several families from Kha'po Owingeh and P'ohwhóge Owingeh pueblos have been making black-on-black ware with the techniques passed down from matriarch potters. Artists from other pueblos have also produced black-on-black ware. Several contemporary artists have created works honoring the pottery of their ancestors.\n\nresult query: {      'query_result': 'Black-on-black ware, pottery tradition, Puebloan Native American, ceramic artists, Northern New Mexico, reduction-fired blackware, pueblo artists, smooth surface, designs, selective burnishing, refractory slip, carving, incising designs, polishing, generations, families, Kha'po Owingeh, P'ohwhóge Owingeh pueblos, matriarch potters, contemporary artists, ancestors'}"})
+    """
+    Use the following example to extract a list of keywords.
+    ###Example###
+    
+    user's question: Black-on-black ware is a 20th- and 21st-century pottery tradition developed by the Puebloan Native American ceramic artists in Northern New Mexico. Traditional reduction-fired blackware has been made for centuries by pueblo artists. Black-on-black ware of the past century is produced with a smooth surface, with the designs applied through selective burnishing or the application of refractory slip. Another style involves carving or incising designs and selectively polishing the raised areas. For generations several families from Kha'po Owingeh and P'ohwhóge Owingeh pueblos have been making black-on-black ware with the techniques passed down from matriarch potters. Artists from other pueblos have also produced black-on-black ware. Several contemporary artists have created works honoring the pottery of their ancestors.
+    
+    result query: 
+    {
+      "query_result": "Black-on-black ware, pottery tradition, Puebloan Native American, ceramic artists, Northern New Mexico, reduction-fired blackware, pueblo artists, smooth surface, designs, selective burnishing, refractory slip, carving, incising designs, polishing, generations, families, Kha'po Owingeh, P'ohwhóge Owingeh pueblos, matriarch potters, contemporary artists, ancestors"
+    }
+    """
+    prompt.append({'role': 'system', 'content': "Generate queries that are as different as possible from the query used in the previous search for extracting the list of keywords."})
+
+    prompt.append({"role": "user", "content": "Generate JSON from search result text. Use 'query_result' as the schema, generate in the format {'query_result': Result extract keywords from a block of text.}, and key in the evaluation results, such as whether the generated search results describe the user's request."})
+    prompt.append({"role": "user", "content": f"user's question:{question}. Result extract keywords from a block of text.:"})
+    
+
+    """
+    system
+    以下の例を参考にキーワードのリストを抽出してください。
+    必要であれば現在の日付を使用してください: {datetime.now().strftime("%Y年%m月%d日")}。
+    
+    ###Example###
+    
+    user's question: 黒地に黒の陶器は、ニューメキシコ州北部のプエブロ人ネイティブ アメリカンの陶芸家によって発展した、20 世紀から 21 世紀にかけての陶器の伝統です。伝統的な還元焼成黒食器は、プエブロの芸術家によって何世紀にもわたって作られてきました。前世紀の黒地に黒の陶器は、選択的に磨きをかけたり、耐火物スリップを塗布したりすることによってデザインが施され、滑らかな表面で製造されています。別のスタイルには、デザインを彫刻または切り込み、盛り上がった領域を選択的に研磨することが含まれます。カポ オウィンゲとポホゲ オウィンゲ プエブロの数家族が、家長の陶芸家から受け継がれた技術を用いて、黒地に黒の陶器を何世代にもわたって作り続けてきました。他のプエブロ出身の芸術家も黒地に黒の陶器を制作しています。何人かの現代芸術家は、祖先の陶器に敬意を表して作品を制作しました。
+    
+    result query: 
+    {
+      'query_result': '黒地に黒の器、陶器の伝統、プエブロのネイティブ アメリカン、陶芸家、ニューメキシコ北部、還元焼成黒器、プエブロの芸術家、滑らかな表面、デザイン、選択的バニシング、耐火物スリップ、彫刻、切り込みデザイン、研磨、世代、家族、カポ・オウィンゲ、ポホゲ・オウィンゲ・プエブロス、女家長陶芸家、現代芸術家、先祖'
+    }
+    
+    キーワードリストを抽出するために、前回の検索で使用したクエリとはできるだけ異なるクエリを生成する。
+    前回の検索で使用したクエリは「{before_query}」です。
+    user
+    検索結果のテキストからJSONを生成する。スキーマとして "query_result"を使用し、{"query_result"： テキストブロックからキーワードを抽出した結果}の形式で生成する。
+    
+    user's question:{}. result query:
+    """
+    
+    # Research用のプロンプトテンプレートを作成
+    response = client.chat.completions.create(
+        model=model_name, # model = "deployment_name".
+        messages=prompt,
+        response_format={ "type": "json_object" },
+        temperature=TEMPERATURE+TEMPERATURE,
+    )
+    res_str = response.choices[0].message.content
+    # print(res_str)
+    
+    # JSON形式の文字列を辞書に変換
+    res = json.loads(res_str)
+    
+    # 出力と新しいメッセージをステートに反映
+    return {
+        "output": res["query_result"],
+    }
+
+
+def search_node_report(
+        model_name: str,
+        question: str,
+        context: str, # search の結果
+        total_words=1000,
+):
+    # リサーチエージェントを呼び出し、結果を取得
+    # あなたは、questionの内容を DuckDuckGo検索エンジンを使って、questionについて検索した検索結果を使用し、questionの内容に則したレポートをMarkdown形式でできる限り詳細に正確さを意識してまとめるアナリストです。
+    prompt = [{'role': 'system', 'content': "You are an analyst who uses the DuckDuckGo search engine to search for the content of the question, using the search results to compile a report in Markdown format as detailed and accurate as possible, in accordance with the content of the question."}]
+    prompt.append({"role": "system", "content": f"Information: {context}"})
+    prompt.append({"role": "system", "content": f"Using the above information, answer the following query or task: '{question}' in a detailed report --"})
+    prompt.append({"role": "system", "content": f"The report should focus on the answer to the query, should be well structured, informative,"})
+    prompt.append({"role": "system", "content": f"in depth and comprehensive, with facts and numbers if available and a minimum of {total_words} words."})
+    prompt.append({"role": "system", "content": f"You should strive to write the report as long as you can using all relevant and necessary information provided."})
+    prompt.append({"role": "system", "content": f"You must write the report with markdown syntax."})
+    prompt.append({"role": "system", "content": f"Use an unbiased and journalistic tone. "})
+    prompt.append({"role": "system", "content": f"You MUST determine your own concrete and valid opinion based on the given information. Do NOT deter to general and meaningless conclusions."})
+    prompt.append({"role": "system", "content": f"Assume that the current date is {dt.datetime.now().strftime('%B %d, %Y')}"})
+    
+    prompt.append({"role": "system", "content": f"Cite search results using inline notations. Only cite the most relevant results that answer the query accurately. Place these citations at the end of the sentence or paragraph that reference them."})
+    prompt.append({"role": "system", "content": f"Please do your best, this is very important to my career."})
+    
+    
+    prompt.append({"role": "system", "content": "Explanation results must be in Japanese."})
+    prompt.append({"role" : "system", "content" : " Do not ask for clarification."})
+    
+    
+    prompt.append({"role": "system", "content": "Please generate a JSON from the text of the following search results. Use 'explanation_result_report' as the schema and 'explanation results' as the key, and generate it in the format of {'explanation_result_report': 'The result of answering a question or task with a detailed report'}."})
+    
+    prompt.append({"role": "user", "content": "Generate a JSON from the text of the following search results. Use 'explanation_result_report' as the schema and the results of explaining the search as the key, creating it in the format of {'explanation_result_report': The result of answering a question or task with a detailed report}."})
+    
+    
+    """
+    システム
+    あなたは、questionの内容を DuckDuckGo検索エンジンを使って、questionについて検索した検索結果を使用し、questionの内容に則したレポートをMarkdown形式でできる限り詳細に正確さを意識してまとめるアナリストです。
+    'Information: {context}'
+    上記の情報を使用して、次の質問またはタスクに対して詳細なレポートで答えてください: "{question}" --
+    このレポートは質問への答えに焦点を当て、よく構成された、情報豊富な、深い、包括的で、可能であれば事実や数字を含むもので、最低{total_words}語以上の長さが必要です。"
+    提供された関連情報を全て使用して、できるだけ長いレポートを書くよう努めてください。
+    レポートはMarkdown構文を使用して書いてください。
+    偏見のない、ジャーナリスティックな調子を使用してください。
+    与えられた情報に基づいて自分自身の具体的で有効な意見を決定してください。一般的で意味のない結論に逃げてはいけません。
+    
+    (使ってない)使用したすべてのソースURLを参考文献としてレポートの最後に書いてください。重複したソースは追加せず、各参考文献について一つの参照のみを含めてください。You MUST write all used source urls at the end of the report as references, and make sure to not add duplicated sources, but only one reference for each.
+    (使ってない){report_format}フォーマットでレポートを書いてください。You MUST write the report in {report_format} format.
+    検索結果をインライン注釈を使用して引用してください。質問に正確に答える最も関連性の高い結果のみを引用してください。これらの引用は、それらを参照する文または段落の最後に配置してください。
+    これは私のキャリアにとって非常に重要ですので、最善を尽くしてください。
+    現在の日付が{datetime.now().strftime('%Y年%m月%d日')}であると仮定してください
+    
+    説明結果は日本語でなければならない。
+    確認のために質問をしないでください
+    
+    以下の検索結果のテキストからJSONを生成してください。スキーマとして「explanation_result_report」、キーとして「explanation results_report」を使用し、{"explanation_result_report": 質問またはタスクに対して詳細なレポートで答えた結果}の形式で生成してください。
+    
+    user
+    以下の検索結果のテキストからJSONを生成する。スキーマとして "explanation_result_report "を使用し、キーとして検索を説明した結果を使用して、{"explanation_result_report": 質問またはタスクに対して詳細なレポートで答えた結果}というフォーマットで生成します。
+    question 問い合わせ内容: {question}
+    search 検索結果: {search_result}
+    """
+    
+    # Research用のプロンプトテンプレートを作成
+    response = client.chat.completions.create(
+        model=model_name, # model = "deployment_name".
+        messages=prompt,
+        response_format={ "type": "json_object" },
+        temperature=TEMPERATURE,
+    )
+    
+    print("response")
+    print(response)
+    search_res_str = response.choices[0].message.content
+    
+    # JSON形式の文字列を辞書に変換
+    search_res = json.loads(search_res_str)
+    
+    # 出力と新しいメッセージをステートに反映
+    return {
+        "output": search_res["explanation_result_report"],
+    }
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -1032,39 +1186,116 @@ def handle_message(data):
     # 4件のメッセージを記憶するように設定
     search_memory = StreamingLLMMemory(max_length=4)
     user_message = data['message']
-    # 検索実施判定 文字数に応じて条件分岐
-    if len(user_message) >= Q_LEN_SEAECH_DECISION:
-        with Timer(prefix=f'thinking time by decision.'):
-            decision_res = {
-                "output": "Search",
-                "messages": user_message
-            }
-    else:
-        with Timer(prefix=f'thinking time by decision.'):
-            decision_res = search_decision_node(MODEL_NAME, user_message)
-    # emit('receive_message', {'message': f"search_decision_node 結果: {decision_res['output']}"})
-    print(f"search_decision_node 結果: {decision_res['output']}")
-    if decision_res["output"] == "Search":
-        # emit('receive_message', {'message': 'Perform search'})
-        print(f"Perform search")
-        with Timer(prefix=f'Handle all time by research.'):
-            research_res = research_agent(user_message, search_memory)
-        
-        get_summary_of_search_results(MODEL_NAME, research_res)
-    else:
-        # 検索を使用しない場合
-        # emit('receive_message', {'message': 'Answered only by LLM'})
-        print(f"Answered only by LLM")
-        messages = [{"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": user_message}]
-        response = client.chat.completions.create(
-            model=MODEL_NAME, # model = "deployment_name".
-            messages=messages,
-            temperature=TEMPERATURE,
+    repor_checked = data.get('repor', False)  # チェックボックスがチェックされている場合はTrue、そうでない場合はFalse
+
+    # チェックボックスの状態に基づいて何らかの処理を行う
+    if repor_checked:
+        print("Repor is checked.")
+        # Reporがチェックされている場合の処理をここに追加
+
+        # 検索用のクエリ生成
+        M_NAME = "gpt-3.5-turbo-0125"
+        # report用検索用のクエリ生成
+        re_query = make_re_search_query_report(
+            M_NAME,
+            user_message,
         )
-        print(response)
-        res_str = response.choices[0].message.content
-        emit('receive_message', {'message': res_str})
+        
+        query = re_query['output']
+        print(f"レポート用検索のクエリ: {query}")
+        # query_message = f"レポート作成用検索のクエリ: {query}"
+        # emit('receive_message', {'message': query_message})
+        # with Timer(prefix=f'date_range_from_word_updated_fixed {research_cnt}:'):
+        query_list = query.split(",")
+        
+        search = ""
+        # 検索クエリの分割を実行
+        planning_split_queries = planning_split_search_query(MODEL_NAME, user_message, str(query))
+        emit('receive_message', {'message': f"レポート作成用検索のクエリ: {str(planning_split_queries)}"})
+        print(f"planning_split_search_query: {str(planning_split_queries)}")
+        
+        # planning_split_queries["output"]の内容を確認し、適切に処理
+        output_data = planning_split_queries["output"]
+
+        if isinstance(output_data, dict):  # outputが辞書型の場合
+            for key, values in output_data.items():
+                combined_string = " ".join(values)
+                # 辞書のキーと結合された文字列を使用
+                text_results = search_text(combined_string)
+                for result in text_results:
+                    search += result["body"] + ", "
+                    
+        elif isinstance(output_data, list):
+            if all(isinstance(item, list) for item in output_data):  # リストのリストの場合
+                for inner_list in output_data:
+                    combined_string = " ".join(inner_list)
+                    # 結合された文字列を使用
+                    text_results = search_text(combined_string, max_results=20)
+                    for result in text_results:
+                        search += result["body"] + ", "
+            else:  # 単一のリストの場合
+                combined_string = " ".join(output_data)
+                # 結合された文字列を使用
+                text_results = search_text(combined_string, max_results=20)
+                for result in text_results:
+                    search += result["body"] + ", "
+            
+        # search_node
+        report_res = search_node_report(
+            MODEL_NAME,
+            user_message,
+            search, # search の結果
+        )
+        resport_output = report_res['output']
+        emit('receive_message', {'message': f"{resport_output}"})
+        print(f"report_output: {resport_output}")
+        # resport_outputの内容をログに出力
+        app.logger.debug(f"report_output: {resport_output}")
+
+        # 改行文字が含まれているかどうかを確認し、結果をログに出力
+        if '\n' in resport_output:
+            app.logger.debug("resport_output contains newline characters.")
+        else:
+            app.logger.debug("resport_output does not contain newline characters.")
+
+        
+        
+        
+        
+    else:
+        # 検索実施判定 文字数に応じて条件分岐
+        if len(user_message) >= Q_LEN_SEAECH_DECISION:
+            with Timer(prefix=f'thinking time by decision.'):
+                decision_res = {
+                    "output": "Search",
+                    "messages": user_message
+                }
+        else:
+            with Timer(prefix=f'thinking time by decision.'):
+                decision_res = search_decision_node(MODEL_NAME, user_message)
+        # emit('receive_message', {'message': f"search_decision_node 結果: {decision_res['output']}"})
+        print(f"search_decision_node 結果: {decision_res['output']}")
+        if decision_res["output"] == "Search":
+            # emit('receive_message', {'message': 'Perform search'})
+            print(f"Perform search")
+            with Timer(prefix=f'Handle all time by research.'):
+                research_res = research_agent(user_message, search_memory)
+            
+            get_summary_of_search_results(MODEL_NAME, research_res)
+        else:
+            # 検索を使用しない場合
+            # emit('receive_message', {'message': 'Answered only by LLM'})
+            print(f"Answered only by LLM")
+            messages = [{"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": user_message}]
+            response = client.chat.completions.create(
+                model=MODEL_NAME, # model = "deployment_name".
+                messages=messages,
+                temperature=TEMPERATURE,
+            )
+            print(response)
+            res_str = response.choices[0].message.content
+            emit('receive_message', {'message': res_str})
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
